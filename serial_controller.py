@@ -220,7 +220,7 @@ if __name__ == "__main__":
             port = port_t[0]
             device_id = SERIAL_TO_ID[port_t[1]]
             try:
-                serial_controller = SerialController(port, 9600, device_id)
+                serial_controller = SerialController(port, 115200, device_id)
                 serial_controller_list.append(serial_controller)
                 print(
                     f"{bcolors.OKGREEN}Port {port} connected : DEVICE {device_id}{bcolors.ENDC}"
