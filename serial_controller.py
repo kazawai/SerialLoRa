@@ -5,6 +5,7 @@ import sys
 import signal
 import time
 from colors import bcolors
+import socket
 
 D_TIME_BETWEEN_PORTS = 1
 
@@ -51,6 +52,19 @@ SERIAL_TO_ID = {
     "E019727B5030574B412E3120FF191B09": "35",
     "31CA30465030574B412E3120FF180C0D": "36",
 }
+
+SERVER_PORT = 12345
+SERVER_IP = "localhost"
+
+try:
+    data_connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    data_connection.connect((SERVER_IP, SERVER_PORT))
+except ConnectionRefusedError:
+    print(
+        f"{bcolors.FAIL}Connection to server {SERVER_IP}:{SERVER_PORT} refused, impossible to communicate with receiver. Exiting{bcolors.ENDC}",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 class SerialController:
@@ -212,6 +226,8 @@ if __name__ == "__main__":
                 f"{bcolors.FAIL}Some devices are not in the SERIAL_TO_ID dictionary, exiting{bcolors.ENDC}",
                 file=sys.stderr,
             )
+            data_connection.send(b"close")
+            data_connection.close()
             sys.exit(1)
 
         # Sort the SERIAL_PORT_LIST based on their ID
@@ -236,12 +252,15 @@ if __name__ == "__main__":
                 f"{bcolors.FAIL}No available port, exiting{bcolors.ENDC}",
                 file=sys.stderr,
             )
+            data_connection.send(b"close")
+            data_connection.close()
             sys.exit(1)
 
         for serial_controller in serial_controller_list:
             print(
                 f"{bcolors.OKCYAN}Writing to port {serial_controller.port} : DEVICE {serial_controller.device_id}{bcolors.ENDC}"
             )
+            data_connection.send(serial_controller.device_id.encode())
             try:
                 serial_controller.write(serial_controller.beginFlag)
                 print(f"{bcolors.OKGREEN}Start flag sent{bcolors.ENDC}")
@@ -277,4 +296,11 @@ if __name__ == "__main__":
             print(
                 f"{bcolors.WARNING}Port {serial_controller.port} closed{bcolors.ENDC}"
             )
+        data_connection.send(b"close")
+        data_connection.close()
         sys.exit(0)
+
+    print(f"{bcolors.OKGREEN}All ports closed{bcolors.ENDC}")
+    data_connection.send(b"close")
+    data_connection.close()
+    sys.exit(0)
