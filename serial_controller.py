@@ -11,7 +11,7 @@ from colors import bcolors
 # Replace with your own dictionary
 from serials_list import SERIAL_TO_ID
 
-D_TIME_BETWEEN_PORTS = 1
+D_TIME_BETWEEN_PORTS = 7.5
 
 
 # SERIAL_PORT_LIST = [f"/dev/ttyACM{i}" for i in range(36)]
@@ -19,7 +19,7 @@ DEVICE_LIST = list(list_ports.grep("ACM"))
 SERIAL_PORT_LIST = [(port.device, port.serial_number) for port in DEVICE_LIST]
 
 SERVER_PORT = 12345
-SERVER_IP = "localhost"
+SERVER_IP = "192.168.145.200"
 
 data_connection = None
 
@@ -161,6 +161,7 @@ class SerialController:
         signal.signal(signal.SIGALRM, self._read_timeout)
         signal.alarm(self.timeout)
         buffer = b""
+        lines_printed = 0
         try:
             while (r := self.read()) != until:
                 if self.skip:
@@ -171,9 +172,14 @@ class SerialController:
                 if r == b"\n":
                     signal.alarm(0)
                     print(buffer)
+                    lines_printed += 1
                     # Reset buffer
                     buffer = b""
                     signal.alarm(self.timeout)
+                if lines_printed == 200:
+                    if data_connection:
+                        data_connection.send(self.device_id.encode())
+                    lines_printed = 0
         except SerialTimeoutException:
             signal.alarm(0)
             self._read_timeout(None, None)
@@ -195,6 +201,28 @@ class SerialController:
 
 
 if __name__ == "__main__":
+
+    def ack_timeout_handler(signum, frame):
+        print(f"{bcolors.FAIL}Timeout while waiting for ACK{bcolors.ENDC}")
+        send_new_device_id(device_id)
+
+    def send_new_device_id(device_id):
+        if not data_connection:
+            return
+
+        signal.signal(signal.SIGALRM, ack_timeout_handler)
+        signal.alarm(5)
+        data_connection.send(device_id.encode())
+        # Wait for the response from the receiver
+        data_connection.recv(1024)
+        if (r := data_connection.recv(1024)) == b"ack":
+            print(f"{bcolors.OKGREEN}ACK received from receiver{bcolors.ENDC}")
+        else:
+            print(
+                f"{bcolors.FAIL}{r} received from receiver instead of ACK{bcolors.ENDC}"
+            )
+            send_new_device_id(device_id)
+
     serial_controller_list = []
     print(f"{bcolors.OKCYAN}Available ports: {SERIAL_PORT_LIST}{bcolors.ENDC}")
     for device in DEVICE_LIST:
@@ -239,12 +267,15 @@ if __name__ == "__main__":
                 data_connection.close()
             sys.exit(1)
 
+        i = 0
         for serial_controller in serial_controller_list:
             print(
                 f"{bcolors.OKCYAN}Writing to port {serial_controller.port} : DEVICE {serial_controller.device_id}{bcolors.ENDC}"
             )
             if data_connection:
-                data_connection.send(serial_controller.device_id.encode())
+                send_new_device_id(serial_controller.device_id)
+                # Sleep a bit to let the receiver process the data
+                time.sleep(D_TIME_BETWEEN_PORTS)
             try:
                 serial_controller.write(serial_controller.beginFlag)
                 print(f"{bcolors.OKGREEN}Start flag sent{bcolors.ENDC}")
@@ -276,6 +307,8 @@ if __name__ == "__main__":
             time.sleep(D_TIME_BETWEEN_PORTS)
     except KeyboardInterrupt:
         for serial_controller in serial_controller_list:
+            # Send interrupt flag to the receiver
+            serial_controller.interrupt()
             serial_controller.close()
             print(
                 f"{bcolors.WARNING}Port {serial_controller.port} closed{bcolors.ENDC}"

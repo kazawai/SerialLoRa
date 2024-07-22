@@ -7,6 +7,7 @@ DEVICE_LIST = list(list_ports.grep("ACM"))
 SERIAL_PORT_LIST = [port.device for port in DEVICE_LIST]
 
 print(f"{bcolors.OKCYAN}Available devices: {bcolors.ENDC}")
+DEVICE_LIST.sort(key=lambda x: int(SERIAL_TO_ID[x.serial_number]))
 for device in DEVICE_LIST:
     print(
         f"{bcolors.OKCYAN}{'{' + device.product + ',' + device.serial_number + ',' + SERIAL_TO_ID[device.serial_number] + '}'}{bcolors.ENDC}"
