@@ -20,6 +20,10 @@ SERIAL_PORT_LIST = [(port.device, port.serial_number) for port in DEVICE_LIST]
 
 SERVER_PORT = 12345
 SERVER_IP = "192.168.145.200"
+# SERVER_IP = "localhost"
+
+SF = 7
+BW = 125
 
 data_connection = None
 
@@ -59,6 +63,9 @@ class SerialController:
         self.interruptFlag = interruptFlagHex.to_bytes(
             (interruptFlagHex.bit_length() + 7) // 8, "big"
         )
+        initFlagHex = 0x7B
+        self.initFlag = initFlagHex.to_bytes((initFlagHex.bit_length() + 7) // 8, "big")
+
         self.timeout = 5
         self.device_id = id
         self.response_timeout_limit = 5
@@ -112,8 +119,8 @@ class SerialController:
         self.response_timeout_limit -= 1
         signal.alarm(self.timeout)
 
-    def wait_for_response_flag(self):
-        signal.signal(signal.SIGALRM, self._resend_begin_flag)
+    def wait_for_response_flag(self, timeout_func=None):
+        signal.signal(signal.SIGALRM, timeout_func)
         signal.alarm(self.timeout)
         if self.skip:
             return
@@ -136,7 +143,7 @@ class SerialController:
         except SerialTimeoutException:
             signal.alarm(0)
             self._resend_begin_flag()
-            self.wait_for_response_flag()
+            self.wait_for_response_flag(timeout_func)
             return
         print(f"{bcolors.OKGREEN}Response flag received{bcolors.ENDC}")
         signal.alarm(0)
@@ -145,6 +152,17 @@ class SerialController:
         self.write(self.interruptFlag)
         self.wait_for_flag(self.endFlag)
         print(f"{bcolors.OKGREEN}End flag received{bcolors.ENDC}")
+
+    def init_transmission(self, sf=7, bw=125):
+        self.write(self.initFlag)
+        self.write(sf.to_bytes(1, "big"))
+        self.write(bw.to_bytes(1, "big"))
+        self.wait_for_response_flag(self._resend_init_flag)
+
+    def _resend_init_flag(self, signum, frame):
+        print(f"{bcolors.WARNING}Timeout, resending Init Flag{bcolors.ENDC}")
+        self.init_transmission()
+        self.wait_for_response_flag(self._resend_init_flag)
 
     def wait_for_flag(self, flag):
         while self.read() != flag:
@@ -200,28 +218,48 @@ class SerialController:
         signal.alarm(0)
 
 
+curr_device_id = None
+
 if __name__ == "__main__":
 
     def ack_timeout_handler(signum, frame):
-        print(f"{bcolors.FAIL}Timeout while waiting for ACK{bcolors.ENDC}")
-        send_new_device_id(device_id)
+        print(
+            f"{bcolors.FAIL}Timeout while waiting for ACK, resending...{bcolors.ENDC}"
+        )
+        if curr_device_id is None:
+            print(
+                f"{bcolors.FAIL}Device ID is None, exiting{bcolors.ENDC}",
+                file=sys.stderr,
+            )
+            exit(1)
 
-    def send_new_device_id(device_id):
+        send_new_device_id(curr_device_id)
+
+    def send_new_device_id(d_id):
         if not data_connection:
             return
 
         signal.signal(signal.SIGALRM, ack_timeout_handler)
         signal.alarm(5)
-        data_connection.send(device_id.encode())
+        print(f"Device ID: {d_id}")
+        r = data_connection.send(d_id.encode())
+        if r == 0:
+            print(
+                f"{bcolors.FAIL}Error sending device ID to receiver, exiting{bcolors.ENDC}",
+                file=sys.stderr,
+            )
+            exit(1)
+        print(f"{bcolors.OKCYAN}Device ID sent to receiver{bcolors.ENDC}")
         # Wait for the response from the receiver
         data_connection.recv(1024)
-        if (r := data_connection.recv(1024)) == b"ack":
+        if (r := data_connection.recv(1024)) == b"ACK":
             print(f"{bcolors.OKGREEN}ACK received from receiver{bcolors.ENDC}")
+            signal.alarm(0)
         else:
             print(
                 f"{bcolors.FAIL}{r} received from receiver instead of ACK{bcolors.ENDC}"
             )
-            send_new_device_id(device_id)
+            send_new_device_id(d_id)
 
     serial_controller_list = []
     print(f"{bcolors.OKCYAN}Available ports: {SERIAL_PORT_LIST}{bcolors.ENDC}")
@@ -273,10 +311,13 @@ if __name__ == "__main__":
                 f"{bcolors.OKCYAN}Writing to port {serial_controller.port} : DEVICE {serial_controller.device_id}{bcolors.ENDC}"
             )
             if data_connection:
+                curr_device_id = serial_controller.device_id
                 send_new_device_id(serial_controller.device_id)
                 # Sleep a bit to let the receiver process the data
                 time.sleep(D_TIME_BETWEEN_PORTS)
             try:
+                serial_controller.init_transmission(SF, BW)
+                print(f"{bcolors.OKGREEN}Transmission initialized{bcolors.ENDC}")
                 serial_controller.write(serial_controller.beginFlag)
                 print(f"{bcolors.OKGREEN}Start flag sent{bcolors.ENDC}")
             except SerialException:
@@ -288,7 +329,9 @@ if __name__ == "__main__":
                 serial_controller.close()
                 continue
             try:
-                serial_controller.wait_for_response_flag()
+                serial_controller.wait_for_response_flag(
+                    serial_controller._resend_begin_flag
+                )
                 if serial_controller.skip:
                     serial_controller.close()
                     time.sleep(D_TIME_BETWEEN_PORTS)
